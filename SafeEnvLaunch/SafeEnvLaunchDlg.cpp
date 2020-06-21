@@ -444,7 +444,13 @@ void CSafeEnvLaunchDlg::OnBnClickedOk()
 		TCHAR fileName[MAX_PATH] = L"";
 		TCHAR ext[MAX_PATH] = L"";
 		_wsplitpath_s(szPath, drive, dir, fileName, ext);
-		exfatCmd.Format(_T("%s%simg_Tool\\exfatserver.exe"),drive,dir);
+		if(IsWow64()){
+			exfatCmd.Format(_T("%s%simg_Tool\\exfatserver.exe"),drive,dir);
+		}
+		else {
+			exfatCmd.Format(_T("%s%simg_Tool32\\exfatserver.exe"),drive,dir);
+		}
+		
 	}
 	
 	STARTUPINFO si;
