@@ -19,6 +19,8 @@
 #define WM_MYMSG  WM_USER+200
 #define WM_STARTMSG WM_USER+201
 #define WM_ENDMSG WM_USER+202
+#define WM_INSTALLOK	WM_USER+203
+
 
 static CString strPwd;
 static CString oriCmd;
@@ -208,7 +210,35 @@ DWORD WINAPI UnInstallFunc(LPVOID p)
 	}
 	SendMessage(safeHwnd,WM_MYMSG,(WPARAM)i++,0);
 
-	SendMessage(safeHwnd,WM_ENDMSG,0,0);
+
+	BOOL bResult = FALSE;  
+  
+    //打开服务控制管理器   
+    SC_HANDLE hSCM = ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);  
+  
+    if (hSCM != NULL)  
+    {  
+        //打开服务   
+        SC_HANDLE hService = ::OpenService(hSCM, _T("VBoxDrv"), SERVICE_QUERY_CONFIG |  SERVICE_QUERY_STATUS);  
+        if (hService != NULL)  
+        {  
+			if(::DeleteService(hService)==FALSE){
+				char tmpstr[256]={0};
+				sprintf(tmpstr,"Err %x",GetLastError());
+				::MessageBoxA(NULL,"删除旧服务失败",tmpstr,MB_OK);
+			}
+
+			CloseServiceHandle(hService);
+            ::CloseServiceHandle(hService);  
+        }  
+		else{
+		
+		}
+        ::CloseServiceHandle(hSCM);  
+
+	}
+	SendMessage(safeHwnd,WM_ENDMSG,0,2);
+	
 }
 
 DWORD WINAPI  InstallFunc(LPVOID p)
@@ -261,6 +291,7 @@ DWORD WINAPI  InstallFunc(LPVOID p)
 		::MessageBox(NULL,strLog,_T("NETLwfInstall"),MB_OK);
 		return 0 ;
 	}
+	Sleep(1000);
 	SendMessage(safeHwnd,WM_MYMSG,(WPARAM)i++,0);
 
 	VBoxStrCmd.Format(_T("%sSUPInstall"),oriCmd);
@@ -270,8 +301,10 @@ DWORD WINAPI  InstallFunc(LPVOID p)
 		return 0 ;
 	}
 	SendMessage(safeHwnd,WM_MYMSG,(WPARAM)i++,0);
+	Sleep(1000);
 
-	SendMessage(safeHwnd,WM_ENDMSG,0,0);
+	SendMessage(safeHwnd,WM_ENDMSG,0,1);
+	return 1;
 }
 
 CSafeEnvLaunchDlg::CSafeEnvLaunchDlg(CWnd* pParent /*=NULL*/)
@@ -292,6 +325,17 @@ LRESULT CSafeEnvLaunchDlg::OnMyEndHandler(WPARAM w , LPARAM l)
 {
 	if(w==1)
 		GetDlgItem(IDOK)->EnableWindow(TRUE);
+	if(l == 1){
+		GetDlgItem(IDC_BUTTON_UNINSTALL)->EnableWindow(TRUE);
+		GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(FALSE);
+		GetDlgItem(IDOK)->EnableWindow(TRUE);
+		
+	}
+	else if(l == 2){
+		GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(TRUE);
+		GetDlgItem(IDC_BUTTON_UNINSTALL)->EnableWindow(FALSE);
+		GetDlgItem(IDOK)->EnableWindow(FALSE);
+	}
 	return 0;
 }
 
@@ -647,33 +691,82 @@ void CSafeEnvLaunchDlg::OnBnClickedButtonCheck()
 {
 	CheckPwd();
 	
+	Sleep(1000);
  
     BOOL bResult = FALSE;  
   
     //打开服务控制管理器   
     SC_HANDLE hSCM = ::OpenSCManager(NULL, NULL, SC_MANAGER_ALL_ACCESS);  
-  
     if (hSCM != NULL)  
     {  
         //打开服务   
         SC_HANDLE hService = ::OpenService(hSCM, _T("VBoxDrv"), SERVICE_QUERY_CONFIG |  SERVICE_QUERY_STATUS);  
         if (hService != NULL)  
         {  
+			unsigned char tmpbuf[512]={0};
+			LPQUERY_SERVICE_CONFIG lpserviceConfig = (LPQUERY_SERVICE_CONFIG)&tmpbuf;
+			DWORD needSize = 0;
+			BOOL qret = ::QueryServiceConfigW(hService,lpserviceConfig,512,&needSize);
+			if(qret){
+				//MessageBox(lpserviceConfig->lpBinaryPathName);
+				wchar_t * pfind = wcsstr(lpserviceConfig->lpBinaryPathName,_T("SystemRoot"));
+				if(!pfind){
+					pfind = wcsstr(lpserviceConfig->lpBinaryPathName,_T("system32"));
+				}
+				if(pfind){
+					MessageBox(_T("本机已经安装了VirtualBox或相关的虚拟化软件，和本产品存在冲突！\r\n请联系产品供应商或卸载VirtualBox等相关虚拟化软件后使用本产品"));
+					::CloseServiceHandle(hSCM); 
+					return;
+				}
+			}
+			else{
+				DWORD le = GetLastError();
+				wchar_t errmsg[256];
+				wsprintf(errmsg,_T("QeuryServiceConfig Error %x,need size %d,give size %d"),le,needSize,512);
+				m_csStatus.SetWindowTextW(errmsg);
+				::CloseServiceHandle(hSCM); 
+				return;
+			}
+
 			SERVICE_STATUS sStatus;
-			BOOL qret = ::QueryServiceStatus(hService,&sStatus);
+			qret = ::QueryServiceStatus(hService,&sStatus);
 			if(qret){
 				if(sStatus.dwCurrentState!=SERVICE_RUNNING){
 					sStatus.dwCurrentState = SERVICE_RUNNING;
 					if(::StartService(hService,0,NULL)==0){
-						m_csStatus.SetWindowTextW(_T("Service VBoxDrv Start Failed"));
+						wchar_t tmpmsg[512];
+						DWORD le = GetLastError();
+						wsprintf(tmpmsg,_T("启动服务VBoxDrv失败，错误号： 0x%X"),le);
+						switch(le){
+						case 0x241:
+							wsprintf(tmpmsg,_T("可能是本机BIOS设置中允许了Secure Boot选项，导致本产品的服务程序启动失败\r\n请关闭相应选项后使用本产品！"),le);
+							break;
+						default:
+							break;
+						}
+						m_csStatus.SetWindowTextW(tmpmsg);
+						GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(TRUE);
+						GetDlgItem(IDC_BUTTON_UNINSTALL)->EnableWindow(TRUE);
 					}
 					else{
-						m_csStatus.SetWindowTextW(_T("VBoxDrv Start Ok"));
+
+						m_csStatus.SetWindowTextW(_T("VBoxDrv服务启动成功"));
+						
+						Sleep(1000);
+						GetDlgItem(IDOK)->EnableWindow(TRUE);
+						GetDlgItem(IDC_BUTTON_UNINSTALL)->EnableWindow(TRUE);
+						GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(FALSE);
 					}
 				}
 				else{
-					m_csStatus.SetWindowTextW(_T("VBoxDrv is Running"));
+					m_csStatus.SetWindowTextW(_T("VBoxDrv服务正在运行"));
+					
+					Sleep(1000);
 					GetDlgItem(IDOK)->EnableWindow(TRUE);
+					GetDlgItem(IDC_BUTTON_UNINSTALL)->EnableWindow(TRUE);
+					GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(FALSE);
+					
+					Sleep(1000);
 				}
 			}
 			else{
@@ -684,9 +777,12 @@ void CSafeEnvLaunchDlg::OnBnClickedButtonCheck()
             ::CloseServiceHandle(hService);  
         }  
 		else{
-			MessageBox(_T("Service VBoxDrv Not Installed!"));
+			MessageBox(_T("请先点击“安装”按钮进行产品初始化"));
+			GetDlgItem(IDC_BUTTON_INSTALL)->EnableWindow(TRUE);
 		}
-        ::CloseServiceHandle(hSCM);  
+        ::CloseServiceHandle(hSCM); 
+		
+		Sleep(1000);
     }  
     return ;  
 	
@@ -707,6 +803,7 @@ void CSafeEnvLaunchDlg::OnBnClickedButtonInstall()
 		GetSafeHwnd(),
 		0,
 		&threadId);
+
 
 }
 
